@@ -1,95 +1,97 @@
 # Multiplet Generator
 
-A Python-based tool to generate LS multiplets from an electron configuration using the LS coupling (Russell–Saunders coupling) scheme. This program calculates the full microstate distribution for a given configuration, performs an iterative "peeling" algorithm to extract the LS multiplets, and optionally provides a consistency check against the total number of unperturbed microstates.
+LS-coupling term lookup for electron configurations, so I don't have to keep
+finding Table 13-2 in Slater's *Quantum Theory of Atomic Structure*. Also a
+sanity checker for GRASP / DIRAC runs: the `--jj` output reproduces the
+relativistic-subshell CSF bookkeeping (levels per J and parity) that
+`rcsfgenerate`/`rlevels` report, cross-checked against the LS decomposition.
+Single file, stdlib only.
 
-## Features
-
-- LS Coupling Calculation:
-  - Computes possible LS multiplets (term symbols such as 3P, 1D, 1S, etc.) from the specified electron configuration.
-
-- Equivalent & Non-Equivalent Electrons:
-  - Treats tokens without a specified principal quantum number as equivalent electrons (with antisymmetrization) and tokens with a number (e.g., 1s) as non-equivalent.
-
-- Overall Parity:
-  - Computes the overall parity of the configuration using the rule (−1)∑(𝑙×count)
-
-- Consistency Check (Statistics Mode):
-  - When the --stats or -s flag is provided, the tool displays the total number of microstates (i.e. unperturbed states) and the sum of the degeneracies of the LS multiplets, so you can verify that the LS decomposition accounts for all microstates.
+For a configuration it prints the allowed LS terms with J levels, term
+parentage for multi-shell configurations, the Hund's-rules ground state with
+Landé g and effective magnetic moments, and on request: the M_L/M_S
+microstate table, jj-coupling splits, interval-rule fine structure,
+octahedral-field term splitting, and the classic diagonal-sum term energies
+for p²/p³/d²/d³ (and hole partners).
 
 ## Usage
 
-Run the script from the command line with the desired configuration string:
-
 ```bash
-python multiplet_generator.py s1p4
+python multiplet_generator.py d3
+python multiplet_generator.py 2p1 3p1            # two nonequivalent p electrons
+python multiplet_generator.py 1s2.2s2.2p3       # nitrogen; . , / or space separate tokens
+python multiplet_generator.py 3d2 4s1           # multi-shell: terms come with parentage
+python multiplet_generator.py p2 --grid         # M_L/M_S table (Slater Fig. 13-3 style)
+python multiplet_generator.py f7 --jj           # relativistic CSF splits, levels per J
+python multiplet_generator.py d3 --zeta 273     # fine structure via interval rule
+python multiplet_generator.py d2 --oh           # weak-field splitting in Oh
+python multiplet_generator.py d2 --energies     # Racah expressions, symbolic
+python multiplet_generator.py d3 --B 918 --C 3850   # evaluated, in the unit of B and C
+python multiplet_generator.py p2 --F2 1500      # p^n uses Slater-Condon F2 instead
 ```
 
-For additional statistics and consistency checks, add the --stats flag:
+## Configuration format
 
-```bash
-python multiplet_generator.py s1s1 --stats
-```
+Tokens are `[n]<letter><count>`: `p2`, `3d4`, `2p1`. Rules:
 
-Display help message:
+- Electrons within a token share a subshell and are equivalent
+  (antisymmetrized, Pauli applies).
+- Different tokens are independent subshells, coupled by convolution of
+  their microstate distributions. So `2p1 3p1` is the nonequivalent-pair
+  case, and `p1 p1` (no n given) also means two distinct p subshells.
+- Tokens with the same explicit n and letter merge: `2p1 2p1` ≡ `2p2`.
+- Concatenated multi-token strings like `2p13p1` are ambiguous and
+  rejected; separate tokens with space, `.`, `,`, or `/`.
 
-```bash
-python multiplet_generator.py --help
-```
+## What it computes
 
-## Configuration Format
+1. **Terms.** Slater determinants per subshell tallied by (M_L, M_S),
+   convolved across subshells; the number of (L, S) terms is
+   `n(L,S) − n(L+1,S) − n(L,S+1) + n(L+1,S+1)` — Slater's Sec. 13-2
+   bookkeeping in closed form.
+2. **Parentage** (automatic for ≥2 open subshells). Each subshell's own
+   terms are coupled left to right with the triangle rule, giving the
+   `3d²(³F)4s → ⁴F, ²F` genealogy used by NIST and GRASP labels. The
+   coupled totals are asserted against the microstate count.
+3. **Hund's rules** (single open subshell): ground term, ground J,
+   normal/inverted multiplet, Landé g per level, and μ_eff both spin-only
+   (typical quenched 3d complex) and g_J√(J(J+1)) (free ion, 4f/5f).
+4. **jj coupling** (`--jj`). Splits each open nl shell over j = l±1/2,
+   enumerates the relativistic configurations, and peels J values from the
+   M_J distributions. The levels-per-J census must match the LS side, and
+   both are printed — this is the GRASP sanity check.
+5. **Fine structure** (`--zeta Z`). Landé interval rule on the ground term,
+   λ = ±ζ/2S, sign from the filling. First-order only: real f-ion levels
+   deviate (Pr³⁺ ³H₅ comes out ~1850 vs. ~2150 cm⁻¹ observed).
+6. **Oh splitting** (`--oh`). Reduction of χ_L onto the irreps of O with
+   g/u from the configuration parity — the weak-field limit of
+   Tanabe–Sugano (³F → ³A₂g + ³T₂g + ³T₁g and so on).
+7. **Hole equivalence.** l^n and l^(4l+2−n) have identical terms and
+   electrostatic splittings; noted, and used for energy lookups (d⁸ → d²).
 
-The configuration string is composed of tokens in the form:
+## Term energies
 
-```
-[principal quantum number][orbital letter][electron count]
-```
+`--energies` prints the diagonal-sum-rule results (Slater Secs. 13-1–13-3):
+p² and p³ in Condon–Shortley F2 (= F²/25), d² and d³ in Racah A, B, C.
+The contribution common to all terms of the configuration (F0 terms,
+multiples of A) is omitted since it cancels in splittings. The d³ ²D pair
+comes from the 2×2 secular problem, hence the square root; ²P and ²H of d³
+are degenerate at this level of treatment.
 
-- Without Principal Quantum Number:
-  - Tokens like p2 denote 2 equivalent electrons in a p-shell. Equivalent electrons are antisymmetrized.
+Coefficients are the standard tabulated ones (Condon & Shortley; Griffith,
+*The Theory of Transition-Metal Ions*, Table 4.6). Cross-checks: term lists
+for p^n, d^n, f² reproduce Slater's Table 13-2 including repeated-term
+counts (two ²D in d³, three ²D in d⁵); f⁷ gives the known 119 terms and
+327 levels, with the jj and LS per-J censuses agreeing; the f² ³H₄ Landé g
+is 0.800 and μ_eff 3.58 μ_B (Pr³⁺ textbook values).
 
-- With Principal Quantum Number:
-  - Tokens like 1s1 denote an electron in a unique shell (non-equivalent). Multiple non-equivalent tokens (e.g., s1s1) are not merged.
+No B/C values are built in — free-ion Racah parameters vary by source, so
+pass your own (any unit; output splittings come out in the same unit).
 
-- Combined Example:
-  - "1sp2" indicates one electron in the 1s orbital and 2 electrons in a p orbital.
+## Possible extensions
 
-## How It Works
-
-1. Parsing & Tokenization:
-The code parses the input string into tokens. Tokens with an explicit principal quantum number are treated as non-equivalent, while tokens without one are merged.
-
-2. Microstate Distribution:
-For each shell, a microstate distribution is computed:
-
-- Equivalent electrons: Use Slater determinants to ensure antisymmetry.
-- Non-equivalent electrons: Use independent single-electron state counting.
-
-3. Distribution Combination:
-The individual distributions from each shell are combined via convolution to obtain the overall microstate distribution.
-
-4. Multiplet Peeling:
-A peeling algorithm iteratively subtracts multiplet blocks (each representing a full LS multiplet with degeneracy (2L+1)(2S+1)) from the overall distribution. This produces the LS multiplets along with the number of times each multiplet is subtracted.
-
-5. Parity Calculation:
-The overall configuration parity is computed using (−1) (sum of count * l)
-  and a superscript ° is appended if the parity is odd.
-
-6. Output & Consistency Check:
-
-The tool prints:
-
-- Overall parity.
-- A list of LS multiplets with their term symbols, counts (from peeling), and expected degeneracies.
-- (Optional) A consistency check showing the total number of microstates versus the sum of LS multiplet degeneracies.
-
-## Requirements
-Python 3 (no additional libraries required)
-
-## Future Enhancements
-
-- Adding a verbose/debug mode to output intermediate microstate distributions.
-- Graphical output of the microstate distribution (e.g., a histogram of ML vs MS)
-- Extending the algorithm to support alternative coupling schemes (such as j–j coupling).
-
-
-
+- Selection-rule checker between two configurations (Laporte, ΔS, ΔL, ΔJ).
+- Generic diagonal-sum energies from c^k coefficients for terms that appear
+  once, instead of hardcoded tables.
+- Restricted jj occupations (active-space style) to mirror a specific
+  rcsfgenerate input rather than the full expansion.
