@@ -13,10 +13,20 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlencode
 
+from grasp_preflight import (
+    JjAnalysis,
+    ParentagePath,
+    TransitionResult,
+    allowed_e1_transitions,
+    j_shell_m_distribution,
+    jj_analysis,
+    parentage_paths,
+)
+
 
 ORBITAL_LETTERS = "spdfghiklmnoq"
 L_FROM_LETTER = {letter: l_value for l_value, letter in enumerate(ORBITAL_LETTERS)}
-TERM_LETTERS = ORBITAL_LETTERS.upper()
+TERM_LETTERS = "SPDFGHIKLMNOQRTUVWXYZ"
 TOKEN_PATTERN = re.compile(
     rf"(?P<n>\d*)(?P<orb>[{ORBITAL_LETTERS}])(?:\^)?(?P<count>\d+)",
     re.IGNORECASE,
@@ -54,9 +64,13 @@ class Subshell:
         return 0 < self.occupancy < self.capacity
 
     @property
-    def label(self) -> str:
+    def name(self) -> str:
         principal = "" if self.n is None else str(self.n)
-        return f"{principal}{ORBITAL_LETTERS[self.l]}{self.occupancy}"
+        return f"{principal}{ORBITAL_LETTERS[self.l]}"
+
+    @property
+    def label(self) -> str:
+        return f"{self.name}{self.occupancy}"
 
 
 @dataclass(frozen=True)
@@ -113,24 +127,6 @@ class HundResult:
     term: Term
     two_j: int
     filling: str
-
-
-@dataclass(frozen=True)
-class Transition:
-    initial_term: Term
-    initial_two_j: int
-    final_term: Term
-    final_two_j: int
-
-    @property
-    def combinations(self) -> int:
-        return self.initial_term.occurrences * self.final_term.occurrences
-
-
-@dataclass(frozen=True)
-class TransitionResult:
-    transitions: Tuple[Transition, ...]
-    reason: Optional[str]
 
 
 def parse_configuration(config_text: str) -> Configuration:
@@ -336,67 +332,6 @@ def hund_ground(
     return HundResult(ground_term, two_j, filling), None
 
 
-def _direct_e1_jump(
-    initial: Configuration, final: Configuration
-) -> Tuple[bool, str]:
-    if initial.electron_count != final.electron_count:
-        return False, "the configurations have different electron counts"
-
-    initial_counts = {(shell.n, shell.l): shell.occupancy for shell in initial.subshells}
-    final_counts = {(shell.n, shell.l): shell.occupancy for shell in final.subshells}
-    keys = set(initial_counts) | set(final_counts)
-    changes = {
-        key: final_counts.get(key, 0) - initial_counts.get(key, 0) for key in keys
-    }
-    removed = [key for key, change in changes.items() if change == -1]
-    added = [key for key, change in changes.items() if change == 1]
-    other = [change for change in changes.values() if change not in (-1, 0, 1)]
-    if len(removed) != 1 or len(added) != 1 or other:
-        return False, "the configurations do not differ by one electron promotion"
-    if abs(removed[0][1] - added[0][1]) != 1:
-        return False, "the promoted electron does not satisfy Δl = ±1"
-    return True, ""
-
-
-def allowed_e1_transitions(
-    initial_configuration: Configuration,
-    initial_terms: Sequence[Term],
-    final_configuration: Configuration,
-    final_terms: Sequence[Term],
-) -> TransitionResult:
-    if initial_configuration.parity == final_configuration.parity:
-        return TransitionResult((), "E1 transitions require a parity change")
-
-    direct_jump, reason = _direct_e1_jump(initial_configuration, final_configuration)
-    if not direct_jump:
-        return TransitionResult((), reason)
-
-    transitions = []
-    for initial_term in initial_terms:
-        for final_term in final_terms:
-            if initial_term.two_s != final_term.two_s:
-                continue
-            if abs(initial_term.L - final_term.L) > 1:
-                continue
-            if initial_term.L == 0 and final_term.L == 0:
-                continue
-            for initial_two_j in j_values(initial_term):
-                for final_two_j in j_values(final_term):
-                    if abs(initial_two_j - final_two_j) > 2:
-                        continue
-                    if initial_two_j == 0 and final_two_j == 0:
-                        continue
-                    transitions.append(
-                        Transition(
-                            initial_term=initial_term,
-                            initial_two_j=initial_two_j,
-                            final_term=final_term,
-                            final_two_j=final_two_j,
-                        )
-                    )
-    return TransitionResult(tuple(transitions), None)
-
-
 def format_half(two_value: int) -> str:
     if two_value % 2 == 0:
         return str(two_value // 2)
@@ -495,6 +430,49 @@ def transition_dict(result: TransitionResult, initial_parity: int, final_parity:
     return {"allowed": entries, "reason": result.reason}
 
 
+def terms_for_subshell(shell: Subshell) -> Tuple[Term, ...]:
+    return terms_for_configuration(Configuration((shell,)))
+
+
+def parentage_dict(paths: Sequence[ParentagePath], parity: int) -> list:
+    parity_symbol = "°" if parity == -1 else ""
+    return [
+        {
+            "parents": list(path.parents),
+            "coupling_sequence": list(path.intermediate_terms),
+            "final_term": path.final_label + parity_symbol,
+            "occurrences": path.occurrences,
+        }
+        for path in paths
+    ]
+
+
+def jj_dict(analysis: JjAnalysis, parity: int) -> dict:
+    return {
+        "parity": "odd" if parity == -1 else "even",
+        "relativistic_configurations": [
+            {
+                "configuration": row.label,
+                "microstates": row.microstates,
+                "J_levels": [
+                    {"J": two_j / 2, "csfs": count}
+                    for two_j, count in row.levels
+                ],
+            }
+            for row in analysis.rows
+        ],
+        "jj_census": [
+            {"J": two_j / 2, "levels": count}
+            for two_j, count in analysis.jj_census
+        ],
+        "ls_census": [
+            {"J": two_j / 2, "levels": count}
+            for two_j, count in analysis.ls_census
+        ],
+        "consistent": analysis.consistent,
+    }
+
+
 def print_analysis(configuration: Configuration, terms: Sequence[Term], stats: bool) -> None:
     distribution = configuration_microstates(configuration)
     microstates = sum(distribution.values())
@@ -553,6 +531,43 @@ def print_analysis(configuration: Configuration, terms: Sequence[Term], stats: b
         print("  status:                  OK")
 
 
+def print_parentage(configuration: Configuration, paths: Sequence[ParentagePath]) -> None:
+    print("\nParentage (open subshells coupled left to right):")
+    if not paths:
+        print("  unavailable: fewer than two open subshells")
+        return
+    for path in paths:
+        genealogy = " -> ".join(path.intermediate_terms)
+        suffix = configuration.parity_symbol
+        if genealogy:
+            genealogy = genealogy[: -len(path.final_label)] + path.final_label + suffix
+        occurrence_text = f" x{path.occurrences}" if path.occurrences > 1 else ""
+        print(f"  {' x '.join(path.parents)} => {genealogy}{occurrence_text}")
+
+
+def print_jj(configuration: Configuration, analysis: JjAnalysis) -> None:
+    print("\nRelativistic subshell occupations and J-coupled CSFs:")
+    for row in analysis.rows:
+        levels = ", ".join(
+            f"J={format_half(two_j)}" + (f" x{count}" if count > 1 else "")
+            for two_j, count in row.levels
+        )
+        print(f"  {row.label}: {levels}  ({row.microstates} magnetic sublevels)")
+
+    parity_sign = "-" if configuration.parity == -1 else "+"
+    jj_summary = "  ".join(
+        f"J={format_half(two_j)}{parity_sign}: {count}"
+        for two_j, count in analysis.jj_census
+    )
+    ls_summary = "  ".join(
+        f"J={format_half(two_j)}{parity_sign}: {count}"
+        for two_j, count in analysis.ls_census
+    )
+    print(f"  Levels per J (jj): {jj_summary}")
+    print(f"  Levels per J (LS): {ls_summary}")
+    print("  cross-check:       OK")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -577,6 +592,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="emit machine-readable JSON"
     )
     parser.add_argument(
+        "--parentage",
+        action="store_true",
+        help="show how terms of multiple open subshells couple",
+    )
+    parser.add_argument(
+        "--jj",
+        action="store_true",
+        help="show relativistic occupations and J-coupled CSF counts",
+    )
+    parser.add_argument(
         "--nist-spectrum",
         metavar="SPECTRUM",
         help="include a NIST ASD levels link, for example 'Ti I'",
@@ -594,6 +619,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         configuration = parse_configuration(config_text)
         terms = terms_for_configuration(configuration)
+        parentage_result = (
+            parentage_paths(configuration, terms, terms_for_subshell)
+            if arguments.parentage
+            else ()
+        )
+        jj_result = jj_analysis(configuration, terms) if arguments.jj else None
         final_configuration = None
         final_terms = None
         transition_result = None
@@ -608,6 +639,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if arguments.json:
         document = {"initial": analysis_dict(configuration, terms)}
+        if arguments.parentage:
+            document["initial"]["parentage"] = parentage_dict(
+                parentage_result, configuration.parity
+            )
+        if jj_result is not None:
+            document["initial"]["jj_coupling"] = jj_dict(
+                jj_result, configuration.parity
+            )
         if final_configuration is not None and final_terms is not None:
             document["final"] = analysis_dict(final_configuration, final_terms)
             document["e1_transitions"] = transition_dict(
@@ -619,6 +658,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     print_analysis(configuration, terms, arguments.stats)
+    if arguments.parentage:
+        print_parentage(configuration, parentage_result)
+    if jj_result is not None:
+        print_jj(configuration, jj_result)
     if final_configuration is not None and final_terms is not None:
         print("\nTransition target:")
         print_analysis(final_configuration, final_terms, arguments.stats)

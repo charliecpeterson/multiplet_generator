@@ -4,6 +4,7 @@ The cases pin known LS terms, state-count invariants, and parser boundaries.
 """
 
 import json
+import itertools
 import math
 import subprocess
 import sys
@@ -162,6 +163,91 @@ class TransitionTests(unittest.TestCase):
         self.assertIn("parity", result.reason)
 
 
+class ParentageTests(unittest.TestCase):
+    def test_two_open_subshells_reproduce_final_terms(self):
+        configuration = mg.parse_configuration("2p1 3s1")
+        terms = mg.terms_for_configuration(configuration)
+        paths = mg.parentage_paths(configuration, terms, mg.terms_for_subshell)
+        self.assertEqual(
+            {(path.parents, path.final_label) for path in paths},
+            {
+                (("2p1(2P)", "3s1(2S)"), "3P"),
+                (("2p1(2P)", "3s1(2S)"), "1P"),
+            },
+        )
+
+    def test_repeated_subshell_terms_retain_occurrence_count(self):
+        configuration = mg.parse_configuration("3d3 4s1")
+        terms = mg.terms_for_configuration(configuration)
+        paths = mg.parentage_paths(configuration, terms, mg.terms_for_subshell)
+        repeated_d_parents = [
+            path
+            for path in paths
+            if path.parents == ("3d3(2D)", "4s1(2S)")
+        ]
+        self.assertEqual(
+            {(path.final_label, path.occurrences) for path in repeated_d_parents},
+            {("3D", 2), ("1D", 2)},
+        )
+
+    def test_three_open_subshells_retain_intermediate_couplings(self):
+        configuration = mg.parse_configuration("2p1 3s1 3d1")
+        terms = mg.terms_for_configuration(configuration)
+        paths = mg.parentage_paths(configuration, terms, mg.terms_for_subshell)
+        self.assertTrue(paths)
+        self.assertTrue(all(len(path.intermediate_terms) == 2 for path in paths))
+
+
+class JjCouplingTests(unittest.TestCase):
+    def test_dynamic_j_shell_counter_matches_determinants(self):
+        for two_j in (1, 3, 5, 7):
+            magnetic_states = range(-two_j, two_j + 1, 2)
+            for occupancy in range(two_j + 2):
+                with self.subTest(two_j=two_j, occupancy=occupancy):
+                    expected = {}
+                    for determinant in itertools.combinations(
+                        magnetic_states, occupancy
+                    ):
+                        total = sum(determinant)
+                        expected[total] = expected.get(total, 0) + 1
+                    self.assertEqual(
+                        mg.j_shell_m_distribution(two_j, occupancy), expected
+                    )
+
+    def test_p2_relativistic_configurations(self):
+        configuration = mg.parse_configuration("2p2")
+        terms = mg.terms_for_configuration(configuration)
+        analysis = mg.jj_analysis(configuration, terms)
+        rows = {row.label: dict(row.levels) for row in analysis.rows}
+        self.assertEqual(
+            rows,
+            {
+                "2p_1/2^2": {0: 1},
+                "2p_1/2^1 2p_3/2^1": {2: 1, 4: 1},
+                "2p_3/2^2": {0: 1, 4: 1},
+            },
+        )
+        self.assertEqual(dict(analysis.jj_census), {0: 2, 2: 1, 4: 2})
+        self.assertTrue(analysis.consistent)
+
+    def test_jj_and_ls_censuses_match_for_all_s_through_f_occupancies(self):
+        for l_value, orbital in enumerate("spdf"):
+            capacity = 2 * (2 * l_value + 1)
+            for occupancy in range(1, capacity + 1):
+                with self.subTest(orbital=orbital, occupancy=occupancy):
+                    configuration = mg.parse_configuration(f"{orbital}{occupancy}")
+                    terms = mg.terms_for_configuration(configuration)
+                    analysis = mg.jj_analysis(configuration, terms)
+                    self.assertTrue(analysis.consistent)
+
+    def test_f7_has_expected_level_count(self):
+        configuration = mg.parse_configuration("4f7")
+        analysis = mg.jj_analysis(
+            configuration, mg.terms_for_configuration(configuration)
+        )
+        self.assertEqual(sum(dict(analysis.jj_census).values()), 327)
+
+
 class CommandLineTests(unittest.TestCase):
     def run_cli(self, *arguments):
         return subprocess.run(
@@ -188,6 +274,15 @@ class CommandLineTests(unittest.TestCase):
         completed = self.run_cli("p2", "--rs_scale=1000")
         self.assertEqual(completed.returncode, 2)
         self.assertIn("unrecognized arguments", completed.stderr)
+
+    def test_parentage_and_jj_json(self):
+        completed = self.run_cli(
+            "2p1 3s1", "--parentage", "--jj", "--json"
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        initial = json.loads(completed.stdout)["initial"]
+        self.assertEqual(len(initial["parentage"]), 2)
+        self.assertTrue(initial["jj_coupling"]["consistent"])
 
 
 if __name__ == "__main__":

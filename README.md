@@ -21,7 +21,7 @@ The script uses only the Python standard library.
 ```bash
 python multiplet_generator.py 2p2
 python multiplet_generator.py 3d3 --stats
-python multiplet_generator.py "2p1 3s1"
+python multiplet_generator.py "2p1 3s1" --parentage --jj
 ```
 
 Example for `2p2`:
@@ -101,6 +101,44 @@ The program compares:
 All four must agree. A disagreement is treated as an implementation error,
 including for configurations with multiple non-equivalent subshells.
 
+## Parentage across open subshells
+
+Use `--parentage` when a configuration has two or more open subshells:
+
+```bash
+python multiplet_generator.py "3d2 4s1" --parentage
+python multiplet_generator.py "3d3 4s1" --parentage
+```
+
+The program first derives the allowed terms of each antisymmetrized subshell,
+then couples their L and S values from left to right. Each genealogy retains
+the number of occurrences inherited from recurring parent terms. For example,
+the two `2D` terms of `3d3` produce two occurrences of both `3D` and `1D`
+when coupled to `4s1(2S)`.
+
+This labels parent subshell terms and intermediate couplings. It does not
+assign seniority or Nielson-Koster labels to recurring terms within one
+equivalent-electron subshell.
+
+## Relativistic occupations and GRASP CSFs
+
+Use `--jj` to split every open `nl` subshell over `j=l-1/2` and `j=l+1/2`:
+
+```bash
+python multiplet_generator.py 2p2 --jj
+python multiplet_generator.py 4f7 --jj
+python multiplet_generator.py "2p1 3s1" --jj
+```
+
+For each allowed relativistic occupation, the program counts antisymmetrized
+`M_J` determinants and obtains the number of J-coupled CSFs from the adjacent
+weight difference. The summed levels-per-J census is independently compared
+with the LS decomposition and must match exactly.
+
+For `2p2`, for example, the relativistic rows are
+`2p_1/2^2`, `2p_1/2^1 2p_3/2^1`, and `2p_3/2^2`. Their combined census is
+two `J=0` levels, one `J=1` level, and two `J=2` levels, matching the LS side.
+
 ## Pure-LS E1 candidates
 
 `--transitions` compares two configurations and lists direct electric-dipole
@@ -129,7 +167,8 @@ python multiplet_generator.py 2p1 --transitions 3s1 --json
 ```
 
 The JSON includes terms, occurrence counts, J levels, Landé factors, J-parity
-block counts, microstate counts, and Hund guidance.
+block counts, microstate counts, and Hund guidance. `--parentage` and `--jj`
+add their corresponding records to the JSON document.
 
 ## NIST ASD comparison link
 
@@ -153,19 +192,23 @@ NIST references used for the conventions in this program:
 
 ## Relationship to GRASP output
 
-The `J^parity` summary is the best direct preflight comparison. For a single
-nonrelativistic configuration, it gives the expected number of physical
-levels in each symmetry block and the total magnetic-sublevel count.
+The default `J^parity` summary gives the physical level count implied by the
+nonrelativistic configuration. The `--jj` rows give the CSF count for each
+specific relativistic occupation and reproduce the same total J census when
+all occupations belonging to the nonrelativistic configuration are included.
 
 Several distinctions matter:
 
-- A GRASP CSF count is a basis dimension, not a physical level count.
+- A per-occupation GRASP CSF count is a basis dimension. The summed census
+  over every relativistic split of one nonrelativistic configuration also
+  equals the number of levels supplied by the LS decomposition.
 - GRASP uses relativistic subshells and jj-coupled CSFs, while this program
   classifies the nonrelativistic configuration in pure LS coupling.
 - Configuration interaction mixes levels with the same J and parity.
 - Strong relativistic mixing can make an LS label only an approximate name.
-- Repeated terms such as the two `2D` terms of `d3` are counted separately,
-  but this program does not assign seniority or parentage labels to them.
+- Repeated terms such as the two `2D` terms of `d3` are counted separately.
+  `--parentage` carries that count through multi-subshell coupling, while
+  seniority labels within `d3` remain outside the current scope.
 
 The counts are therefore a symmetry and bookkeeping check. Energy ordering,
 mixing coefficients, and transition rates belong to the atomic-structure
@@ -180,14 +223,19 @@ python -m unittest -v
 ```
 
 The suite pins known `p2`, `d2`, and `d3` term sets; explicit-subshell and
-parser behavior; Hund ground levels; E1 filters; JSON output; and exhaustive
-state-count and electron-hole checks for every occupancy from `s` through
-`f`.
+parser behavior; Hund ground levels; E1 filters; JSON output; parentage; a
+brute-force differential check of the dynamic j-subshell counter; and
+exhaustive LS, jj, state-count, and electron-hole checks for every occupancy
+from `s` through `f`.
 
 ## Removed energy options
 
 Earlier development versions accepted `--so`, `--zeta`, `--rs_scale`, `--a`,
 and `--b`. Those options used a generic `S(S+1)`/`L(L+1)` expression that can
 even violate Hund ordering, so they have been removed rather than deprecated.
+Another experimental rewrite added limited Racah-energy tables and
+octahedral-field reductions. Those remain in Git history but were not folded
+into the preflight CLI because their physical scope differs from a free-ion
+symmetry census.
 Use GRASP, Cowan code, Quanty, or another atomic-structure program when actual
 energies or mixing are required.
